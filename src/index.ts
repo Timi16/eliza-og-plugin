@@ -7,7 +7,7 @@ import { createOgElizaPlugin } from "./eliza/plugin-og.ts";
 export async function createOgPluginFromEnv(configJson: unknown) {
   const parsed: AgentConfig = AgentConfigSchema.parse(configJson);
   const pk ="0x5c3a638856b1b708f5e75d4831d700208eef4c2484eb59dd817ce25cdd918ad4";
-  const rpc ="https://16601.rpc.thirdweb.com"; // Galileo
+  const rpc ="https://evmrpc-testnet.0g.ai"; // Galileo
   const providerAddr ="0xf07240Efa67755B5311bc75784a061eDB47165Dd";
 
   if (!pk || !rpc) {

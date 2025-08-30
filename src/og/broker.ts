@@ -1,3 +1,4 @@
+// src/og/broker.ts
 import { Wallet, JsonRpcProvider } from "ethers";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -41,6 +42,14 @@ export class OgBrokerSession {
     return 0;
   }
 
+  async addLedger(initialA0GI: number): Promise<void> {
+    await this.broker?.ledger?.addLedger?.(initialA0GI);
+  }
+
+  async depositFund(amountA0GI: number): Promise<void> {
+    await this.broker?.ledger?.depositFund?.(amountA0GI);
+  }
+
   async listServices(): Promise<any[]> {
     try {
       const root = await this.broker?.listService?.();
@@ -74,31 +83,57 @@ export class OgBrokerSession {
 
   async infer(req: InferenceRequest): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
     const meta = await this.getServiceMetadata(req.providerAddress);
-    if (!meta || !meta.endpoint) throw new Error("No 0G services visible on this RPC or bad provider address");
-    if (!this.broker?.inference?.acknowledgeProviderSigner || !this.broker?.inference?.getRequestHeaders) {
-      throw new Error("Broker inference API unavailable");
-    }
+    if (!meta?.endpoint) throw new Error("No 0G service endpoint for the provider");
+
     await this.broker.inference.acknowledgeProviderSigner(req.providerAddress);
-    const headers = await this.broker.inference.getRequestHeaders(req.providerAddress, req.content);
-    const res = await fetch(`${meta.endpoint}/chat/completions`, {
+
+    // One-time billing headers: generate new for every request (cannot be reused)
+    const headers = await this.broker.inference.getRequestHeaders(
+      req.providerAddress,
+      req.content
+    );
+
+    const url = `${meta.endpoint.replace(/\/+$/, "")}/chat/completions`;
+    const model = req.modelHint ?? meta.model;
+    if (!model) throw new Error("Provider did not advertise a model; pass `modelHint`");
+
+    const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
+      headers: {
+        "Content-Type": "application/json",
+        // Optional: some proxies expect an Authorization header to exist.
+        Authorization: (headers as any).Authorization ?? "Bearer ",
+        ...headers,
+      },
       body: JSON.stringify({
-        messages: [{ role: "user", content: req.content }],
-        model: req.modelHint ?? meta.model
-      })
+        // 0G docs show 'system' in examples; 'user' also works at OpenAI parity.
+        messages: [{ role: "system", content: req.content }],
+        model,
+      }),
     });
+
+    if (!res.ok) {
+      const body = await this.safeText(res);
+      throw new Error(`Provider HTTP ${res.status} at ${url}: ${body || "no body"}`);
+    }
+
     const json = (await res.json()) as ChatCompletion;
-    let valid: boolean | null = null;
+
+    let verified: boolean | null = null;
     try {
-      const chatID = json?.id;
+      const chatId = json?.id;
       const content = json?.choices?.[0]?.message?.content ?? "";
-      if (chatID && content && this.broker?.inference?.processResponse) {
-        valid = await this.broker.inference.processResponse(req.providerAddress, content, chatID);
+      if (chatId && content && this.broker?.inference?.processResponse) {
+        verified = await this.broker.inference.processResponse(req.providerAddress, content, chatId as any);
       }
     } catch {
-      valid = null;
+      verified = null;
     }
-    return { raw: json, verified: valid };
+
+    return { raw: json, verified };
+  }
+
+  private async safeText(res: Response): Promise<string> {
+    try { return await res.text(); } catch { return ""; }
   }
 }
