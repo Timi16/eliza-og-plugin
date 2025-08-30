@@ -1,4 +1,3 @@
-// src/og/broker.ts
 import { Wallet, JsonRpcProvider } from "ethers";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -7,7 +6,7 @@ const { createZGComputeNetworkBroker } = require("@0glabs/0g-serving-broker");
 export type InferenceRequest = {
   providerAddress: string;
   content: string;
-  modelHint?: string;
+  modelHint?: string; // optional fallback, but we prefer provider model
 };
 
 type ChatCompletion = {
@@ -62,7 +61,9 @@ export class OgBrokerSession {
     return [];
   }
 
-  async getServiceMetadata(providerAddress: string): Promise<{ endpoint?: string; model?: string } | null> {
+  async getServiceMetadata(
+    providerAddress: string
+  ): Promise<{ endpoint?: string; model?: string } | null> {
     try {
       const m = await this.broker?.getServiceMetadata?.(providerAddress);
       if (m && (m.endpoint || m.model)) return m;
@@ -71,49 +72,57 @@ export class OgBrokerSession {
       const m2 = await this.broker?.inference?.getServiceMetadata?.(providerAddress);
       if (m2 && (m2.endpoint || m2.model)) return m2;
     } catch {}
+
     const services = await this.listServices();
     if (!services.length) return null;
     const lower = (x: string) => (typeof x === "string" ? x.toLowerCase() : "");
     const svc =
-      services.find((s: any) => lower(s?.provider) === lower(providerAddress)) ?? services[0];
+      services.find((s: any) => lower(s?.provider) === lower(providerAddress)) ??
+      services[0];
     const endpoint = (svc as any)?.url ?? (svc as any)?.endpoint ?? "";
     const model = (svc as any)?.model ?? "";
     return { endpoint, model };
   }
 
-  async infer(req: InferenceRequest): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
+  async infer(
+    req: InferenceRequest
+  ): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
     const meta = await this.getServiceMetadata(req.providerAddress);
-    if (!meta?.endpoint) throw new Error("No 0G service endpoint for the provider");
+    if (!meta?.endpoint) {
+      throw new Error("No 0G service endpoint for the provider");
+    }
 
+    // Must call once per provider; SDK is idempotent
     await this.broker.inference.acknowledgeProviderSigner(req.providerAddress);
 
-    // One-time billing headers: generate new for every request (cannot be reused)
+    // Single-use headers – generate fresh per request (cannot be reused)
     const headers = await this.broker.inference.getRequestHeaders(
       req.providerAddress,
       req.content
     );
 
     const url = `${meta.endpoint.replace(/\/+$/, "")}/chat/completions`;
-    const model = req.modelHint ?? meta.model;
-    if (!model) throw new Error("Provider did not advertise a model; pass `modelHint`");
+    // Prefer provider-advertised model; fallback to hint only if absent
+    const model = meta.model ?? req.modelHint;
+    if (!model) throw new Error("Provider did not advertise a model; pass modelHint");
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Optional: some proxies expect an Authorization header to exist.
+        // Some proxies expect Authorization header present; harmless if empty
         Authorization: (headers as any).Authorization ?? "Bearer ",
-        ...headers,
+        ...headers
       },
       body: JSON.stringify({
-        // 0G docs show 'system' in examples; 'user' also works at OpenAI parity.
-        messages: [{ role: "system", content: req.content }],
-        model,
-      }),
+        messages: [{ role: "user", content: req.content }],
+        model
+      })
     });
 
     if (!res.ok) {
       const body = await this.safeText(res);
+      // 403 => header reuse or insufficient balance; 404 => bad model/path
       throw new Error(`Provider HTTP ${res.status} at ${url}: ${body || "no body"}`);
     }
 
@@ -124,7 +133,11 @@ export class OgBrokerSession {
       const chatId = json?.id;
       const content = json?.choices?.[0]?.message?.content ?? "";
       if (chatId && content && this.broker?.inference?.processResponse) {
-        verified = await this.broker.inference.processResponse(req.providerAddress, content, chatId as any);
+        verified = await this.broker.inference.processResponse(
+          req.providerAddress,
+          content,
+          chatId as any
+        );
       }
     } catch {
       verified = null;
@@ -134,6 +147,10 @@ export class OgBrokerSession {
   }
 
   private async safeText(res: Response): Promise<string> {
-    try { return await res.text(); } catch { return ""; }
+    try {
+      return await res.text();
+    } catch {
+      return "";
+    }
   }
 }

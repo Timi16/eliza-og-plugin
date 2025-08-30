@@ -2,7 +2,8 @@ import { z } from "zod";
 
 export const AgentConfigSchema = z.object({
   agent: z.object({
-    model: z.string().default("openai:gpt-4o-mini"), // or provider-specific model id
+    // Leave blank by default so we don't override the provider's model
+    model: z.string().default(""),
     budget: z.object({
       perCallA0GI: z.number().nonnegative().default(0.01),
       dailyA0GI: z.number().nonnegative().default(0.5),

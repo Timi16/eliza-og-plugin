@@ -12,12 +12,14 @@ async function main() {
   const ogPlugin = await createOgPluginFromEnv(config);
 
   const runtime = new AgentRuntime({
-    plugins: [bootstrapPlugin, ogPlugin],
+    plugins: [bootstrapPlugin, ogPlugin]
   });
 
   const message = { content: { text: "Summarize DeLabz in 2 lines." } } as any;
 
-  const infer = (ogPlugin.actions ?? []).find((a: { name: string; }) => a.name === "OG_INFER")!;
+  const infer = (ogPlugin.actions ?? []).find(
+    (a: { name: string }) => a.name === "OG_INFER"
+  )!;
 
   const cb: HandlerCallback = async (out) => {
     console.log("OG Inference →", out);

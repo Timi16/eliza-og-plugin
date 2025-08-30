@@ -17,27 +17,27 @@ export function createOgElizaPlugin(opts: {
     similes: ["og.infer", "INFER_ON_0G"],
     description: "Send the current user request to 0G provider for inference.",
     validate: async () => true,
-    handler: async (runtime, message, state, options, callback) => {
+    handler: async (_runtime, message, _state, _options, callback) => {
       const text =
         (message as any)?.content?.text ??
         (message as any)?.content ??
         JSON.stringify(message);
 
-      assertWithinBudget(agentCfg, /*estimated*/ 0.001);
+      assertWithinBudget(agentCfg, 0.001);
 
+      // Do NOT pass modelHint here; prefer provider's model from metadata
       const out = await session.infer({
         providerAddress: defaultProviderAddress,
-        content: text,
-        modelHint: agentCfg.model,
+        content: text
       });
 
       const norm = normalizeOgChatResult(out.raw);
       callback?.({
         text: norm.content,
-        meta: { id: norm.id, verified: out.verified, usage: norm.usage },
+        meta: { id: norm.id, verified: out.verified, usage: norm.usage }
       } as any);
     },
-    examples: [],
+    examples: []
   };
 
   const listModelsAction: Action = {
@@ -49,7 +49,7 @@ export function createOgElizaPlugin(opts: {
       const services = await session.listServices();
       callback?.({ data: services } as any);
     },
-    examples: [],
+    examples: []
   };
 
   const ledgerBalanceAction: Action = {
@@ -61,7 +61,7 @@ export function createOgElizaPlugin(opts: {
       const balance = await session.getBalance();
       callback?.({ data: { balanceA0GI: balance } } as any);
     },
-    examples: [],
+    examples: []
   };
 
   const plugin: Plugin = {
@@ -70,7 +70,7 @@ export function createOgElizaPlugin(opts: {
     actions: [inferAction, listModelsAction, ledgerBalanceAction],
     providers: [],
     evaluators: [],
-    services: [],
+    services: []
   };
 
   return plugin;
