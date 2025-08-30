@@ -1,0 +1,26 @@
+{
+  "name": "eliza-og-agent",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsx examples/dev.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@0glabs/0g-serving-broker": "0.3.2",
+    "@elizaos/core": "^1.4.3",
+    "@elizaos/plugin-bootstrap": "^1.4.3",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "agent": {
+    "model": "openai:gpt-4o-mini",
+    "budget": { "perCallA0GI": 0.01, "dailyA0GI": 0.5, "lowBalanceA0GI": 0.02 },
+    "generation": { "maxTokens": 512, "temperature": 0.7 },
+    "tools": ["og.infer", "og.models.list", "og.ledger.balance"],
+    "routing": { "alwaysUse0G": true },
+    "postActions": []
+  }
+}
