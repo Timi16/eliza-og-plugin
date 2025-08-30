@@ -31,44 +31,50 @@ export class OgBrokerSession {
 
   async getBalance(): Promise<number> {
     try {
-      if (this.broker?.ledger?.getBalance) {
-        const b = await this.broker.ledger.getBalance();
-        if (typeof b === "number") return b;
-        if (b && typeof b.balance === "number") return b.balance;
-      }
-      return 0;
-    } catch {
-      return 0;
-    }
+      const b =
+        (await this.broker?.ledger?.getBalance?.()) ??
+        (await this.broker?.ledger?.getBalance?.(this.signer.address));
+      if (typeof b === "number") return b;
+      if (b && typeof b.balance === "number") return b.balance;
+      if (b && typeof b.balance === "bigint") return Number(b.balance);
+    } catch {}
+    return 0;
   }
 
   async listServices(): Promise<any[]> {
     try {
-      const services = await this.broker.listService();
-      return Array.isArray(services) ? services : [];
-    } catch {
-      return [];
-    }
+      const root = await this.broker?.listService?.();
+      if (Array.isArray(root)) return root;
+    } catch {}
+    try {
+      const inf = await this.broker?.inference?.listService?.();
+      if (Array.isArray(inf)) return inf;
+    } catch {}
+    return [];
   }
 
   async getServiceMetadata(providerAddress: string): Promise<{ endpoint?: string; model?: string } | null> {
+    try {
+      const m = await this.broker?.getServiceMetadata?.(providerAddress);
+      if (m && (m.endpoint || m.model)) return m;
+    } catch {}
+    try {
+      const m2 = await this.broker?.inference?.getServiceMetadata?.(providerAddress);
+      if (m2 && (m2.endpoint || m2.model)) return m2;
+    } catch {}
     const services = await this.listServices();
-    if (!services.length) throw new Error("No 0G services on this RPC (use Galileo 16601).");
-      console.log("0G services[0] →", services[0]); // should include url/endpoint & model
-
+    if (!services.length) return null;
     const lower = (x: string) => (typeof x === "string" ? x.toLowerCase() : "");
     const svc =
-      services.find((s: any) => lower(s?.provider) === lower(providerAddress)) ??
-      services[0];
-    if (!svc) return null;
-    const endpoint = (svc as any).url ?? (svc as any).endpoint ?? "";
-    const model = (svc as any).model ?? "";
+      services.find((s: any) => lower(s?.provider) === lower(providerAddress)) ?? services[0];
+    const endpoint = (svc as any)?.url ?? (svc as any)?.endpoint ?? "";
+    const model = (svc as any)?.model ?? "";
     return { endpoint, model };
   }
 
   async infer(req: InferenceRequest): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
     const meta = await this.getServiceMetadata(req.providerAddress);
-    if (!meta || !meta.endpoint) throw new Error("No endpoint for provider");
+    if (!meta || !meta.endpoint) throw new Error("No 0G services visible on this RPC or bad provider address");
     if (!this.broker?.inference?.acknowledgeProviderSigner || !this.broker?.inference?.getRequestHeaders) {
       throw new Error("Broker inference API unavailable");
     }
