@@ -8,7 +8,7 @@ export type ChatMessage = { role: "system" | "user" | "assistant"; content: stri
 export type InferenceRequest = {
   providerAddress: string;
   messages: ChatMessage[];
-  modelHint?: string; 
+  modelHint?: string;       // optional fallback if provider doesn't advertise
   temperature?: number;
   topP?: number;
   maxTokens?: number;

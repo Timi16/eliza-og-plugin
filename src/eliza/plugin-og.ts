@@ -4,14 +4,20 @@ import { normalizeOgChatResult } from "../mappers/normalize.ts";
 import { assertWithinBudget } from "../guards/policy.ts";
 import { OgBrokerSession, type ChatMessage } from "../og/broker.ts";
 
-type OgInferOptions = {
+type Invocation = {
+  user: string;
   system?: string;
+  context?: { text?: string };
   history?: ChatMessage[];
-  temperature?: number;
-  topP?: number;
-  maxTokens?: number;
-  messages?: ChatMessage[]; // if provided, used verbatim
+  messages?: ChatMessage[];
+  generation?: { temperature?: number; topP?: number; maxTokens?: number; stop?: string[] };
+  provider?: { address?: string; model?: string };
+  safety?: { notInContextPhrase?: string };
 };
+
+function capHistory(msgs: ChatMessage[], max = 24): ChatMessage[] {
+  return msgs.length > max ? msgs.slice(-max) : msgs;
+}
 
 export function createOgElizaPlugin(opts: {
   session: OgBrokerSession;
@@ -27,47 +33,49 @@ export function createOgElizaPlugin(opts: {
     description: "Send the current user request to 0G provider for inference.",
     validate: async () => true,
     handler: async (_runtime, message, _state, options, callback) => {
-      const text =
+      const fallbackText =
         (message as any)?.content?.text ??
         (message as any)?.content ??
         JSON.stringify(message);
 
+      const inv = (options?.invocation ?? {}) as Invocation;
       assertWithinBudget(agentCfg, 0.001);
 
-      const opt = (options ?? {}) as OgInferOptions;
-
-      // Build messages (prefer verbatim, else compose from system/history/user)
-      let messages: ChatMessage[];
-      if (Array.isArray(opt.messages) && opt.messages.length) {
-        messages = opt.messages;
+      let messages: ChatMessage[] = [];
+      if (Array.isArray(inv.messages) && inv.messages.length) {
+        messages = inv.messages;
       } else {
-        messages = [];
-        if (opt.system && typeof opt.system === "string") {
-          messages.push({ role: "system", content: opt.system });
+        if (inv.system) messages.push({ role: "system", content: inv.system });
+        const ctxText = inv.context?.text;
+        if (ctxText && ctxText.trim()) {
+          messages.push({ role: "system", content: `CONTEXT:\n${ctxText.trim()}` });
         }
-        if (Array.isArray(opt.history)) {
-          for (const m of opt.history) {
-            if (m?.role && m?.content) messages.push(m);
-          }
+        if (Array.isArray(inv.history)) {
+          for (const m of inv.history) if (m?.role && m?.content) messages.push(m);
         }
-        messages.push({ role: "user", content: text });
+        const userText = inv.user ?? fallbackText;
+        messages.push({ role: "user", content: userText });
       }
+      messages = capHistory(messages);
 
-      // Optional: lightweight cap to avoid runaway history sizes
-      if (messages.length > 24) messages = messages.slice(-24);
+      const providerAddress = inv.provider?.address || defaultProviderAddress;
+      // allow "auto" which triggers broker discovery
+      const modelHint =
+        inv.provider?.model ??
+        (agentCfg.model && agentCfg.model !== "auto" ? agentCfg.model : undefined);
 
       const out = await session.infer({
-        providerAddress: defaultProviderAddress,
+        providerAddress,
         messages,
-        modelHint: agentCfg.model || undefined,                 // only used if provider didn't advertise
-        temperature: opt.temperature ?? agentCfg.generation?.temperature,
-        topP: opt.topP ?? agentCfg.generation?.topP,
-        maxTokens: opt.maxTokens ?? agentCfg.generation?.maxTokens
+        modelHint,
+        temperature: inv.generation?.temperature ?? agentCfg.generation?.temperature,
+        topP: inv.generation?.topP ?? agentCfg.generation?.topP,
+        maxTokens: inv.generation?.maxTokens ?? agentCfg.generation?.maxTokens
       });
 
       const norm = normalizeOgChatResult(out.raw);
       callback?.({
-        text: norm.content,
+        text: norm.content ?? inv.safety?.notInContextPhrase ?? "",
         meta: { id: norm.id, verified: out.verified, usage: norm.usage }
       } as any);
     },
