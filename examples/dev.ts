@@ -15,7 +15,7 @@ async function main() {
     plugins: [bootstrapPlugin, ogPlugin]
   });
 
-  const message = { content: { text: "Summarize Og Or Zero Gravity Labs in 2 lines." } } as any;
+  const message = { content: { text: "Summarize DeLabz in 2 lines." } } as any;
 
   const infer = (ogPlugin.actions ?? []).find(
     (a: { name: string }) => a.name === "OG_INFER"
@@ -26,7 +26,18 @@ async function main() {
     return [] as Memory[];
   };
 
-  await infer.handler(runtime, message, {} as any, {}, cb);
+  // Context: system + short history + current user
+  const options = {
+    system: "You are the DeLabz project AI. Be concise and accurate.",
+    history: [
+      { role: "user", content: "Who are you?" },
+      { role: "assistant", content: "I'm the DeLabz AI assistant." }
+    ],
+    temperature: 0.5,
+    maxTokens: 256
+  };
+
+  await infer.handler(runtime, message, {} as any, options, cb);
 }
 
 main().catch((e) => {

@@ -2,7 +2,16 @@ import type { Plugin, Action } from "@elizaos/core";
 import type { AgentConfig } from "../config/schema.ts";
 import { normalizeOgChatResult } from "../mappers/normalize.ts";
 import { assertWithinBudget } from "../guards/policy.ts";
-import { OgBrokerSession } from "../og/broker.ts";
+import { OgBrokerSession, type ChatMessage } from "../og/broker.ts";
+
+type OgInferOptions = {
+  system?: string;                       // optional system persona
+  history?: ChatMessage[];               // prior turns [{role, content}]
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  messages?: ChatMessage[];              // if provided, used verbatim
+};
 
 export function createOgElizaPlugin(opts: {
   session: OgBrokerSession;
@@ -17,7 +26,7 @@ export function createOgElizaPlugin(opts: {
     similes: ["og.infer", "INFER_ON_0G"],
     description: "Send the current user request to 0G provider for inference.",
     validate: async () => true,
-    handler: async (_runtime, message, _state, _options, callback) => {
+    handler: async (_runtime, message, _state, options, callback) => {
       const text =
         (message as any)?.content?.text ??
         (message as any)?.content ??
@@ -25,10 +34,33 @@ export function createOgElizaPlugin(opts: {
 
       assertWithinBudget(agentCfg, 0.001);
 
-      // Do NOT pass modelHint here; prefer provider's model from metadata
+      const opt = (options ?? {}) as OgInferOptions;
+
+      // If options.messages is provided, use it as-is.
+      let messages: ChatMessage[];
+      if (Array.isArray(opt.messages) && opt.messages.length) {
+        messages = opt.messages;
+      } else {
+        messages = [];
+        if (opt.system && typeof opt.system === "string") {
+          messages.push({ role: "system", content: opt.system });
+        }
+        if (Array.isArray(opt.history)) {
+          for (const m of opt.history) {
+            if (m?.role && m?.content) messages.push(m);
+          }
+        }
+        messages.push({ role: "user", content: text });
+      }
+
       const out = await session.infer({
         providerAddress: defaultProviderAddress,
-        content: text
+        messages,
+        // prefer provider model; only pass hint if config set AND provider has none
+        modelHint: agentCfg.model || undefined,
+        temperature: opt.temperature ?? agentCfg.generation?.temperature,
+        topP: opt.topP ?? agentCfg.generation?.topP,
+        maxTokens: opt.maxTokens ?? agentCfg.generation?.maxTokens
       });
 
       const norm = normalizeOgChatResult(out.raw);

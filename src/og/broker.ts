@@ -3,10 +3,15 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { createZGComputeNetworkBroker } = require("@0glabs/0g-serving-broker");
 
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
 export type InferenceRequest = {
   providerAddress: string;
-  content: string;
-  modelHint?: string; // optional fallback, but we prefer provider model
+  messages: ChatMessage[];
+  modelHint?: string; 
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
 };
 
 type ChatCompletion = {
@@ -92,38 +97,39 @@ export class OgBrokerSession {
       throw new Error("No 0G service endpoint for the provider");
     }
 
-    // Must call once per provider; SDK is idempotent
     await this.broker.inference.acknowledgeProviderSigner(req.providerAddress);
 
-    // Single-use headers – generate fresh per request (cannot be reused)
+    // Single-use headers – generate fresh per request
     const headers = await this.broker.inference.getRequestHeaders(
       req.providerAddress,
-      req.content
+      JSON.stringify(req.messages) // stable unique-ish content basis
     );
 
     const url = `${meta.endpoint.replace(/\/+$/, "")}/chat/completions`;
-    // Prefer provider-advertised model; fallback to hint only if absent
     const model = meta.model ?? req.modelHint;
     if (!model) throw new Error("Provider did not advertise a model; pass modelHint");
+
+    const body: Record<string, unknown> = {
+      model,
+      messages: req.messages
+    };
+    if (typeof req.temperature === "number") body.temperature = req.temperature;
+    if (typeof req.topP === "number") body.top_p = req.topP;
+    if (typeof req.maxTokens === "number") body.max_tokens = req.maxTokens;
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Some proxies expect Authorization header present; harmless if empty
         Authorization: (headers as any).Authorization ?? "Bearer ",
         ...headers
       },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: req.content }],
-        model
-      })
+      body: JSON.stringify(body)
     });
 
     if (!res.ok) {
-      const body = await this.safeText(res);
-      // 403 => header reuse or insufficient balance; 404 => bad model/path
-      throw new Error(`Provider HTTP ${res.status} at ${url}: ${body || "no body"}`);
+      const txt = await this.safeText(res);
+      throw new Error(`Provider HTTP ${res.status} at ${url}: ${txt || "no body"}`);
     }
 
     const json = (await res.json()) as ChatCompletion;
