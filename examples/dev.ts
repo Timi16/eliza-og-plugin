@@ -54,11 +54,6 @@ End of context.
   };
 
   const questions = [
-    "Who becomes Commander of the Survey Corps after Erwin?",
-    "What exactly triggers the Rumbling?",
-    "What is ODM gear used for?",
-    "What is Mikasa's relation to Eren?",
-    "Name the three Walls.",
     "Who inherits the Colossal Titan later?"
   ];
 

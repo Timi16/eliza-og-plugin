@@ -3,10 +3,15 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { createZGComputeNetworkBroker } = require("@0glabs/0g-serving-broker");
 
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
 export type InferenceRequest = {
   providerAddress: string;
-  content: string;
-  modelHint?: string;
+  messages: ChatMessage[];
+  modelHint?: string; 
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
 };
 
 type ChatCompletion = {
@@ -18,10 +23,6 @@ type ChatCompletion = {
 export class OgBrokerSession {
   private signer: Wallet;
   private broker: any;
-  private cache: Map<
-    string,
-    { endpoint: string; model?: string }
-  > = new Map();
 
   constructor(privateKey: string, rpcUrl: string) {
     const provider = new JsonRpcProvider(rpcUrl);
@@ -30,8 +31,6 @@ export class OgBrokerSession {
 
   async init() {
     this.broker = await createZGComputeNetworkBroker(this.signer);
-    // Warm inference service map so getRequestHeaders won’t lack serviceType
-    await this.safeListServices();
     return this;
   }
 
@@ -56,116 +55,85 @@ export class OgBrokerSession {
   }
 
   async listServices(): Promise<any[]> {
-    return this.safeListServices();
-  }
-
-  private async safeListServices(): Promise<any[]> {
-    // Try inference list first (it populates the inference broker’s internal lookup)
-    try {
-      const inf = await this.broker?.inference?.listService?.();
-      if (Array.isArray(inf)) return inf;
-    } catch {}
-    // Fallback to root list
     try {
       const root = await this.broker?.listService?.();
       if (Array.isArray(root)) return root;
     } catch {}
+    try {
+      const inf = await this.broker?.inference?.listService?.();
+      if (Array.isArray(inf)) return inf;
+    } catch {}
     return [];
   }
 
-  private async ensureInferenceMeta(
+  async getServiceMetadata(
     providerAddress: string
-  ): Promise<{ endpoint: string; model?: string }> {
-    const key = providerAddress.toLowerCase();
-    // Use cache if present
-    const cached = this.cache.get(key);
-    if (cached?.endpoint) return cached;
-
-    // Ask the INFERENCE module first — this populates its serviceType map
+  ): Promise<{ endpoint?: string; model?: string } | null> {
     try {
-      const m =
-        (await this.broker?.inference?.getServiceMetadata?.(providerAddress)) ||
-        null;
-      if (m?.endpoint) {
-        const meta = { endpoint: m.endpoint as string, model: (m as any).model };
-        this.cache.set(key, meta);
-        return meta;
-      }
+      const m = await this.broker?.getServiceMetadata?.(providerAddress);
+      if (m && (m.endpoint || m.model)) return m;
+    } catch {}
+    try {
+      const m2 = await this.broker?.inference?.getServiceMetadata?.(providerAddress);
+      if (m2 && (m2.endpoint || m2.model)) return m2;
     } catch {}
 
-    // If not returned, force-refresh service list and pick the matching provider
-    const services = await this.safeListServices();
-    if (!services.length) {
-      throw new Error(
-        "No 0G services visible on this RPC. Use Galileo (chain 16601) or check provider registration."
-      );
-    }
+    const services = await this.listServices();
+    if (!services.length) return null;
+    const lower = (x: string) => (typeof x === "string" ? x.toLowerCase() : "");
     const svc =
-      services.find(
-        (s: any) =>
-          String(s?.provider || "").toLowerCase() === key
-      ) ?? services[0];
-
+      services.find((s: any) => lower(s?.provider) === lower(providerAddress)) ??
+      services[0];
     const endpoint = (svc as any)?.url ?? (svc as any)?.endpoint ?? "";
-    const model = (svc as any)?.model ?? undefined;
-    if (!endpoint) {
-      throw new Error(
-        "Provider has no endpoint registered; cannot perform inference."
-      );
-    }
-    const meta = { endpoint: String(endpoint), model: model ? String(model) : undefined };
-    this.cache.set(key, meta);
-    return meta;
+    const model = (svc as any)?.model ?? "";
+    return { endpoint, model };
   }
 
   async infer(
     req: InferenceRequest
   ): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
-    const meta = await this.ensureInferenceMeta(req.providerAddress);
-    if (!meta.endpoint) {
+    const meta = await this.getServiceMetadata(req.providerAddress);
+    if (!meta?.endpoint) {
       throw new Error("No 0G service endpoint for the provider");
     }
 
-    // Acknowledge is idempotent; keeps provider-side state happy across calls
     await this.broker.inference.acknowledgeProviderSigner(req.providerAddress);
 
-    // IMPORTANT: get new, single-use billing headers each request
-    // Calling after ensureInferenceMeta() guarantees inference serviceType is known
+    // Single-use headers – generate fresh per request
     const headers = await this.broker.inference.getRequestHeaders(
       req.providerAddress,
-      req.content
+      JSON.stringify(req.messages) // stable unique-ish content basis
     );
 
-    const url = joinPath(meta.endpoint, "chat/completions");
-    const model = req.modelHint ?? meta.model;
-    if (!model) {
-      throw new Error(
-        "Provider did not advertise a model; pass `modelHint` in the request."
-      );
-    }
+    const url = `${meta.endpoint.replace(/\/+$/, "")}/chat/completions`;
+    const model = meta.model ?? req.modelHint;
+    if (!model) throw new Error("Provider did not advertise a model; pass modelHint");
+
+    const body: Record<string, unknown> = {
+      model,
+      messages: req.messages
+    };
+    if (typeof req.temperature === "number") body.temperature = req.temperature;
+    if (typeof req.topP === "number") body.top_p = req.topP;
+    if (typeof req.maxTokens === "number") body.max_tokens = req.maxTokens;
 
     const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Some proxies require Authorization to exist; harmless otherwise
         Authorization: (headers as any).Authorization ?? "Bearer ",
-        ...headers,
+        ...headers
       },
-      body: JSON.stringify({
-        messages: [{ role: "user", content: req.content }],
-        model,
-      }),
+      body: JSON.stringify(body)
     });
 
     if (!res.ok) {
-      const body = await this.safeText(res);
-      throw new Error(`Provider HTTP ${res.status} at ${url}: ${body || "no body"}`);
+      const txt = await this.safeText(res);
+      throw new Error(`Provider HTTP ${res.status} at ${url}: ${txt || "no body"}`);
     }
 
     const json = (await res.json()) as ChatCompletion;
 
-    // Optional verification (TEE-backed services)
     let verified: boolean | null = null;
     try {
       const chatId = json?.id;
@@ -191,10 +159,4 @@ export class OgBrokerSession {
       return "";
     }
   }
-}
-
-function joinPath(base: string, tail: string): string {
-  const b = (base || "").trim().replace(/\/+$/, "");
-  const t = tail.replace(/^\/+/, "");
-  return `${b}/${t}`;
 }
