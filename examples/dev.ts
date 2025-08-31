@@ -61,9 +61,6 @@ const profile = {
   ].join("\n")
 };
 
-function icon(v?: boolean | null) {
-  return v === true ? "✔" : v === false ? "✖" : "–";
-}
 
 async function main() {
   const config = JSON.parse(readFileSync(new URL("./agent.config.json", import.meta.url), "utf-8"));
