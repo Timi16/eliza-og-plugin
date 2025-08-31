@@ -10,7 +10,6 @@ type OGUsage = { total_tokens?: number; prompt_tokens?: number; completion_token
 type OGMeta  = { id?: string | null; verified?: boolean | null; usage?: OGUsage | null };
 type OGOut   = { text?: string; meta?: OGMeta | null };
 
-const SHOW_INTERNALS = process.env.DEBUG === "1";
 
 const profile = {
   system: [
@@ -19,7 +18,7 @@ const profile = {
     "STRICT MODE:",
     "- You MUST answer ONLY from the provided CONTEXT.",
     `- If the CONTEXT does not contain the answer, reply exactly`,
-    "- use general knowledge, the web, do not use any assumptions.",
+    "- use general knowledge from context, the web, do not use any assumptions.",
     "- Keep answers concise (1 short sentence).",
     "- Do not add prefaces or explanations.",
   ].join("\n"),
@@ -102,12 +101,6 @@ async function main() {
 
 
     console.log("\nAnswer:", answer);
-
-    if (SHOW_INTERNALS) {
-      console.log(
-        `\n[id=${meta.id ?? "null"} | verified=${icon(meta.verified)} | tokens: total=${usage.total_tokens ?? "?"}, prompt=${usage.prompt_tokens ?? "?"}, completion=${usage.completion_tokens ?? "?"}]\n`
-      );
-    }
 
     return [] as Memory[];
   };
