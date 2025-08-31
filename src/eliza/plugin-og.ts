@@ -4,19 +4,54 @@ import { normalizeOgChatResult } from "../mappers/normalize.ts";
 import { assertWithinBudget } from "../guards/policy.ts";
 import { OgBrokerSession, type ChatMessage } from "../og/broker.ts";
 
-type Invocation = {
+type ToolSpec = {
+  allow?: string[];
+  toolChoice?: "auto" | "none";
+  params?: Record<string, unknown>;
+  mode?: "pre" | "post" | "both";
+};
+
+type BaseInvocation = {
   user: string;
   system?: string;
-  context?: { text?: string };
+  context?: {
+    text?: string;
+    inft?: Record<string, unknown>;
+    attachments?: Array<{ url: string; mediaType?: string }>;
+  };
   history?: ChatMessage[];
   messages?: ChatMessage[];
   generation?: { temperature?: number; topP?: number; maxTokens?: number; stop?: string[] };
+};
+
+type MultiTask = BaseInvocation & {
+  id?: string;           
   provider?: { address?: string; model?: string };
+  tools?: ToolSpec;
+};
+
+type Invocation = BaseInvocation & {
+  provider?: { address?: string; model?: string };
+  tools?: ToolSpec;
   safety?: { notInContextPhrase?: string };
+  multi?: MultiTask[];    
 };
 
 function capHistory(msgs: ChatMessage[], max = 24): ChatMessage[] {
   return msgs.length > max ? msgs.slice(-max) : msgs;
+}
+
+function buildMessages(inv: BaseInvocation, fallbackUser: string): ChatMessage[] {
+  if (Array.isArray(inv.messages) && inv.messages.length) return capHistory(inv.messages);
+  const out: ChatMessage[] = [];
+  if (inv.system) out.push({ role: "system", content: inv.system });
+  const ctx = inv.context?.text?.trim();
+  if (ctx) out.push({ role: "system", content: `CONTEXT:\n${ctx}` });
+  if (Array.isArray(inv.history)) {
+    for (const m of inv.history) if (m?.role && m?.content) out.push(m);
+  }
+  out.push({ role: "user", content: inv.user ?? fallbackUser });
+  return capHistory(out);
 }
 
 export function createOgElizaPlugin(opts: {
@@ -30,7 +65,7 @@ export function createOgElizaPlugin(opts: {
   const inferAction: Action = {
     name: "OG_INFER",
     similes: ["og.infer", "INFER_ON_0G"],
-    description: "Send the current user request to 0G provider for inference.",
+    description: "Send the current user request to 0G provider for inference (supports multi-topic).",
     validate: async () => true,
     handler: async (_runtime, message, _state, options, callback) => {
       const fallbackText =
@@ -39,44 +74,91 @@ export function createOgElizaPlugin(opts: {
         JSON.stringify(message);
 
       const inv = (options?.invocation ?? {}) as Invocation;
-      assertWithinBudget(agentCfg, 0.001);
 
-      let messages: ChatMessage[] = [];
-      if (Array.isArray(inv.messages) && inv.messages.length) {
-        messages = inv.messages;
-      } else {
-        if (inv.system) messages.push({ role: "system", content: inv.system });
-        const ctxText = inv.context?.text;
-        if (ctxText && ctxText.trim()) {
-          messages.push({ role: "system", content: `CONTEXT:\n${ctxText.trim()}` });
-        }
-        if (Array.isArray(inv.history)) {
-          for (const m of inv.history) if (m?.role && m?.content) messages.push(m);
-        }
-        const userText = inv.user ?? fallbackText;
-        messages.push({ role: "user", content: userText });
+      // Single-task path
+      if (!Array.isArray(inv.multi) || inv.multi.length === 0) {
+        assertWithinBudget(agentCfg, 0.001);
+
+        const messages = buildMessages(inv, fallbackText);
+        const providerAddress = inv.provider?.address || defaultProviderAddress;
+        const modelHint =
+          inv.provider?.model ??
+          (agentCfg.model && agentCfg.model !== "auto" ? agentCfg.model : undefined);
+
+        const out = await session.infer({
+          providerAddress,
+          messages,
+          modelHint,
+          temperature: inv.generation?.temperature ?? agentCfg.generation?.temperature,
+          topP: inv.generation?.topP ?? agentCfg.generation?.topP,
+          maxTokens: inv.generation?.maxTokens ?? agentCfg.generation?.maxTokens
+        });
+
+        const norm = normalizeOgChatResult(out.raw);
+        callback?.({
+          text: norm.content ?? inv.safety?.notInContextPhrase ?? "",
+          meta: { id: norm.id, verified: out.verified, usage: norm.usage }
+        } as any);
+        return;
       }
-      messages = capHistory(messages);
 
-      const providerAddress = inv.provider?.address || defaultProviderAddress;
-      // allow "auto" which triggers broker discovery
-      const modelHint =
-        inv.provider?.model ??
-        (agentCfg.model && agentCfg.model !== "auto" ? agentCfg.model : undefined);
+      // Multi-task path (anime + sports + basketball, etc.)
+      const results: Array<{ id?: string; text: string; meta: any }> = [];
 
-      const out = await session.infer({
-        providerAddress,
-        messages,
-        modelHint,
-        temperature: inv.generation?.temperature ?? agentCfg.generation?.temperature,
-        topP: inv.generation?.topP ?? agentCfg.generation?.topP,
-        maxTokens: inv.generation?.maxTokens ?? agentCfg.generation?.maxTokens
-      });
+      for (const task of inv.multi) {
+        assertWithinBudget(agentCfg, 0.001);
 
-      const norm = normalizeOgChatResult(out.raw);
+        const messages = buildMessages(
+          {
+            user: task.user,
+            system: task.system ?? inv.system,
+            context: task.context ?? inv.context,
+            history: task.history ?? inv.history,
+            messages: task.messages,
+            generation: task.generation ?? inv.generation
+          },
+          fallbackText
+        );
+
+        const providerAddress = task.provider?.address || inv.provider?.address || defaultProviderAddress;
+        const modelHint =
+          task.provider?.model ??
+          inv.provider?.model ??
+          (agentCfg.model && agentCfg.model !== "auto" ? agentCfg.model : undefined);
+
+        const out = await session.infer({
+          providerAddress,
+          messages,
+          modelHint,
+          temperature:
+            task.generation?.temperature ??
+            inv.generation?.temperature ??
+            agentCfg.generation?.temperature,
+          topP:
+            task.generation?.topP ??
+            inv.generation?.topP ??
+            agentCfg.generation?.topP,
+          maxTokens:
+            task.generation?.maxTokens ??
+            inv.generation?.maxTokens ??
+            agentCfg.generation?.maxTokens
+        });
+
+        const norm = normalizeOgChatResult(out.raw);
+        results.push({
+          id: task.id,
+          text: norm.content ?? inv.safety?.notInContextPhrase ?? "",
+          meta: { id: norm.id, verified: out.verified, usage: norm.usage }
+        });
+      }
+      const joined = results
+        .map(r => (r.id ? `# ${r.id}\n${r.text}` : r.text))
+        .join("\n\n");
+
       callback?.({
-        text: norm.content ?? inv.safety?.notInContextPhrase ?? "",
-        meta: { id: norm.id, verified: out.verified, usage: norm.usage }
+        text: joined,
+        data: { results },
+        meta: { multi: true }
       } as any);
     },
     examples: []
