@@ -4,7 +4,8 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { AgentRuntime, type HandlerCallback, type Memory } from "@elizaos/core";
 import { bootstrapPlugin } from "@elizaos/plugin-bootstrap";
-import { createOgPluginFromEnv } from "../src/index.ts";
+import {} from "@elizaos/plugin-bootstrap"
+import { createOgPluginFromEnv } from "../src/index.js";
 
 type OGUsage = { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number; [k: string]: unknown };
 type OGMeta  = { id?: string | null; verified?: boolean | null; usage?: OGUsage | null };
@@ -66,6 +67,7 @@ async function main() {
   const config = JSON.parse(readFileSync(new URL("./agent.config.json", import.meta.url), "utf-8"));
   const ogPlugin = await createOgPluginFromEnv(config);
   const runtime = new AgentRuntime({ plugins: [bootstrapPlugin, ogPlugin] });
+  runtime.init()
   const infer = (ogPlugin.actions ?? []).find((a) => a.name === "OG_INFER")!;
   const rl = createInterface({ input, output });
 

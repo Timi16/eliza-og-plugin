@@ -1,7 +1,7 @@
-import { Wallet, JsonRpcProvider } from "ethers";
+import { Wallet, JsonRpcProvider, JsonRpcSigner } from "ethers";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { createZGComputeNetworkBroker } = require("@0glabs/0g-serving-broker");
+import { createZGComputeNetworkBroker } from "@0glabs/0g-serving-broker";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -21,16 +21,14 @@ type ChatCompletion = {
 };
 
 export class OgBrokerSession {
-  private signer: Wallet;
+  private signer:  Wallet | JsonRpcSigner;
   private broker: any;
 
-  constructor(privateKey: string, rpcUrl: string) {
-    const provider = new JsonRpcProvider(rpcUrl);
-    this.signer = new Wallet(privateKey, provider);
+  constructor(wallet: Wallet | JsonRpcSigner , provider: JsonRpcProvider) {
+    this.signer = wallet
   }
-
   async init() {
-    this.broker = await createZGComputeNetworkBroker(this.signer);
+    this.broker = await createZGComputeNetworkBroker(this.signer as any);
     return this;
   }
 
@@ -96,7 +94,9 @@ export class OgBrokerSession {
 
   private latestUserText(messages: ChatMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user" && messages[i].content) return messages[i].content;
+      if (messages[i]?.role === "user" && messages[i]?.content) {
+        return messages[i]?.content || "";
+      }
     }
     return messages.map(m => `[${m.role}] ${m.content}`).join("\n");
   }
@@ -143,11 +143,12 @@ export class OgBrokerSession {
   }
 
   private async reinit() {
-    this.broker = await createZGComputeNetworkBroker(this.signer);
+    this.broker = await createZGComputeNetworkBroker(this.signer as any);
   }
 
   async infer(req: InferenceRequest): Promise<{ raw: ChatCompletion; verified: boolean | null }> {
     const meta = await this.getServiceMetadata(req.providerAddress);
+    console.log("service metadata", meta);
     if (!meta?.endpoint) throw new Error("No 0G service endpoint for the provider");
 
     const billable = this.latestUserText(req.messages);
@@ -172,6 +173,7 @@ export class OgBrokerSession {
     }
 
     const model = meta.model ?? req.modelHint;
+    console.log("using model", req.modelHint);
     if (!model) throw new Error("Provider did not advertise a model; pass modelHint");
 
     const body = this.buildBody(req, model);

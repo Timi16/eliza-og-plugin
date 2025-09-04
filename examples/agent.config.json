@@ -5,6 +5,11 @@
     "generation": { "maxTokens": 512, "temperature": 0.7 },
     "tools": ["og.infer", "og.models.list", "og.ledger.balance"],
     "routing": { "alwaysUse0G": true },
-    "postActions": []
+    "postActions": [],
+    "actions":[
+      {"name":"OG_INFER","similes": ["make inference","predict","classify","analyze","what is","tell me about","give me information on","explain","describe", "INFER_ON_0G"],"description": "Send the current user request to 0G provider for inference (supports multi-topic).","tool":"og.infer"},
+      {"name":"OG_MODELS_LIST","similes": ["list models","available models","show models","what models are there"],"tool":"og.models.list"},
+      {"name":"OG_LEDGER_BALANCE","similes": ["wallet balance","my balance","how much do I have","check balance"],"tool":"og.ledger.balance"}
+    ]
   }
 }
